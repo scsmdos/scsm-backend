@@ -1,12 +1,9 @@
 
 import mongoose from 'mongoose';
 
-const MONGODB_URI = process.env.MONGODB_URI;
 
-if (!MONGODB_URI) {
-    // Graceful fallback advice for local dev without env
-    console.warn("Please define the MONGODB_URI environment variable inside .env.local");
-}
+// Removed top-level env read to prevent timing issues
+
 
 let cached = global.mongoose;
 
@@ -15,7 +12,12 @@ if (!cached) {
 }
 
 async function dbConnect() {
-    if (!MONGODB_URI) return null; // Return null if no URI, caller must handle
+    const MONGODB_URI = process.env.MONGODB_URI;
+
+    if (!MONGODB_URI) {
+        console.error("❌ MONGODB_URI is not defined in environment variables!");
+        throw new Error("Please define the MONGODB_URI environment variable inside .env");
+    }
 
     if (cached.conn) {
         return cached.conn;
@@ -23,7 +25,7 @@ async function dbConnect() {
 
     if (!cached.promise) {
         const opts = {
-            bufferCommands: false,
+            bufferCommands: true, // Enable buffering (wait for connection)
         };
 
         cached.promise = mongoose.connect(MONGODB_URI, opts).then((mongoose) => {

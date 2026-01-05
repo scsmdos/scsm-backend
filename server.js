@@ -356,6 +356,7 @@ app.post('/api/verify-payment', async (req, res) => {
 });
 
 // 3. LOGIN API (Strict) & GENERATE TOKEN
+// 3. LOGIN API (Strict) & GENERATE TOKEN
 app.post('/api/login', async (req, res) => {
     const { name, mobile, email } = req.body;
 
@@ -367,9 +368,7 @@ app.post('/api/login', async (req, res) => {
             email: { $regex: new RegExp(`^${email}$`, 'i') }
         });
 
-        if (!user) return res.status(404).json({ message: 'User not found. Check details or Purchase Course.' })
-
-            ;
+        if (!user) return res.status(404).json({ message: 'User not found. Check details or Purchase Course.' });
 
         // Name Match
         const dbName = user.name.toLowerCase().trim();
@@ -378,20 +377,30 @@ app.post('/api/login', async (req, res) => {
             return res.status(401).json({ message: 'Name does not match our records.' });
         }
 
-        // Check if user has any paid courses
-        if (!user.courses || user.courses.length === 0) {
-            return res.status(403).json({ message: 'No courses purchased. Please buy a course first.' });
+        const now = new Date();
+        let validCourses = [];
+
+        // 1. Check NEW Schema (courses array)
+        if (user.courses && user.courses.length > 0) {
+            validCourses = user.courses.filter(c => c.isPaid && new Date(c.expiryDate) > now);
         }
 
-        const now = new Date();
-
-        // Filter valid paid courses (paid + not expired)
-        const validCourses = user.courses.filter(c => {
-            return c.isPaid && new Date(c.expiryDate) > now;
-        });
+        // 2. Check OLD Schema (Legacy Support)
+        if (validCourses.length === 0 && user.isPaid) {
+            const expiry = user.expiryDate ? new Date(user.expiryDate) : new Date(Date.now() + 86400000); // Default 1 day if missing
+            if (expiry > now) {
+                validCourses.push({
+                    courseId: user.enrolledCourse || 'fttp',
+                    courseName: user.courseName || 'Soft Skills Practice',
+                    subject: (user.enrolledCourse === 'dttp') ? 'CLS' : 'CSS',
+                    attemptsLeft: user.attemptsLeft || 30,
+                    selectedSubject: (user.enrolledCourse === 'dttp') ? 'CLS' : 'CSS'
+                });
+            }
+        }
 
         if (validCourses.length === 0) {
-            return res.status(403).json({ message: 'No valid courses found. Payment incomplete or expired.' });
+            return res.status(403).json({ message: 'No active course found. Please purchase a course.' });
         }
 
         // Generate JWT
@@ -412,15 +421,15 @@ app.post('/api/login', async (req, res) => {
                 courses: validCourses.map(c => ({
                     courseId: c.courseId,
                     courseName: c.courseName,
-                    selectedSubject: c.subject,
+                    selectedSubject: c.subject || c.selectedSubject || 'CSS',
                     attemptsLeft: c.attemptsLeft
                 }))
             }
         });
 
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: 'Server Error' });
+        console.error("Login Error:", error);
+        res.status(500).json({ message: 'Server Error: ' + error.message });
     }
 });
 
