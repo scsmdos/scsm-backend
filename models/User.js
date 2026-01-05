@@ -6,13 +6,17 @@ const UserSchema = new mongoose.Schema({
     email: { type: String, required: true },
     mobile: { type: String, required: true, unique: true },
     centerName: { type: String },
-    isPaid: { type: Boolean, default: false },
-    enrolledCourse: { type: String }, // 'fttp' or 'dttp'
-    courseName: { type: String },
-    paymentDate: { type: Date },
-    expiryDate: { type: Date },
-    attemptsLeft: { type: Number, default: 30 },
-    orderId: { type: String }
+    // Array to store multiple course purchases
+    courses: [{
+        courseId: { type: String }, // 'fttp' or 'dttp'
+        courseName: { type: String }, // 'Soft Skills Practice' or 'Language Skills Practice'
+        subject: { type: String }, // 'CSS' or 'CLS'
+        isPaid: { type: Boolean, default: false },
+        orderId: { type: String },
+        paymentDate: { type: Date },
+        expiryDate: { type: Date },
+        attemptsLeft: { type: Number, default: 30 }
+    }]
 }, { timestamps: true });
 
 // Prevent recompilation of model

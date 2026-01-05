@@ -162,32 +162,68 @@ app.post('/api/create-order', async (req, res) => {
         const expiry = new Date();
         expiry.setDate(expiry.getDate() + validityDays);
 
+        const subject = courseId === 'fttp' ? 'CSS' : 'CLS';
+        const fullCourseName = courseId === 'fttp' ? 'Soft Skills Practice' : 'Language Skills Practice';
+
         // Try database save with timeout protection
         console.log(`[CreateOrder] Saving user to database...`);
         try {
-            const savePromise = User.findOneAndUpdate(
-                { mobile: customerPhone },
-                {
+            // Find user first
+            let user = await User.findOne({ mobile: customerPhone });
+
+            if (!user) {
+                // New user - create with first course
+                const savePromise = User.create({
                     name: customerName,
                     email: customerEmail,
                     mobile: customerPhone,
                     centerName: centerName || 'Online Student',
-                    isPaid: false,
-                    orderId: orderId,
-                    enrolledCourse: courseId,
-                    courseName: courseId === 'fttp' ? 'Soft Skills Practice' : 'Language Skills Practice',
-                    paymentDate: new Date(),
-                    expiryDate: expiry,
-                    attemptsLeft: 30
-                },
-                { upsert: true, new: true }
-            );
+                    courses: [{
+                        courseId: courseId,
+                        courseName: fullCourseName,
+                        subject: subject,
+                        isPaid: false,
+                        orderId: orderId,
+                        paymentDate: new Date(),
+                        expiryDate: expiry,
+                        attemptsLeft: 30
+                    }]
+                });
 
-            // Wait max 5 seconds for database
-            await Promise.race([
-                savePromise,
-                new Promise((_, reject) => setTimeout(() => reject(new Error('DB Timeout')), 5000))
-            ]);
+                await Promise.race([
+                    savePromise,
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('DB Timeout')), 5000))
+                ]);
+            } else {
+                // Existing user - check if course already purchased
+                const existingCourse = user.courses.find(c => c.courseId === courseId);
+
+                if (existingCourse) {
+                    // Update existing course order
+                    existingCourse.orderId = orderId;
+                    existingCourse.isPaid = false;
+                    existingCourse.paymentDate = new Date();
+                } else {
+                    // Add new course
+                    user.courses.push({
+                        courseId: courseId,
+                        courseName: fullCourseName,
+                        subject: subject,
+                        isPaid: false,
+                        orderId: orderId,
+                        paymentDate: new Date(),
+                        expiryDate: expiry,
+                        attemptsLeft: 30
+                    });
+                }
+
+                const savePromise = user.save();
+                await Promise.race([
+                    savePromise,
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('DB Timeout')), 5000))
+                ]);
+            }
+
             console.log(`[CreateOrder] User saved successfully`);
         } catch (dbError) {
             console.error(`[CreateOrder] Database Error (continuing anyway):`, dbError.message);
@@ -272,31 +308,43 @@ app.post('/api/verify-payment', async (req, res) => {
         });
 
         if (response.data.order_status === 'PAID') {
-            const user = await User.findOneAndUpdate(
-                { orderId: orderId },
-                { isPaid: true, paymentDate: new Date() },
-                { new: true }
-            );
+            // Find user and update the specific course as paid
+            const user = await User.findOne({ 'courses.orderId': orderId });
 
             if (user) {
-                // Generate JWT
-                const token = jwt.sign(
-                    { _id: user._id, mobile: user.mobile, name: user.name },
-                    process.env.JWT_SECRET,
-                    { expiresIn: '20d' }
-                );
+                // Find and update the specific course
+                const course = user.courses.find(c => c.orderId === orderId);
+                if (course) {
+                    course.isPaid = true;
+                    course.paymentDate = new Date();
+                    await user.save();
 
-                return res.status(200).json({
-                    success: true,
-                    token: token,
-                    user: {
-                        name: user.name,
-                        mobile: user.mobile,
-                        selectedSubject: user.enrolledCourse === 'fttp' ? 'CSS' : 'CLS',
-                        courseName: user.courseName,
-                        attemptsLeft: user.attemptsLeft
-                    }
-                });
+                    // Generate JWT
+                    const token = jwt.sign(
+                        { _id: user._id, mobile: user.mobile, name: user.name },
+                        process.env.JWT_SECRET,
+                        { expiresIn: '20d' }
+                    );
+
+                    // Return ALL paid courses
+                    const paidCourses = user.courses.filter(c => c.isPaid && new Date() < new Date(c.expiryDate));
+
+                    return res.status(200).json({
+                        success: true,
+                        token: token,
+                        user: {
+                            name: user.name,
+                            mobile: user.mobile,
+                            centerName: user.centerName || 'Online Student',
+                            courses: paidCourses.map(c => ({
+                                courseId: c.courseId,
+                                courseName: c.courseName,
+                                selectedSubject: c.subject,
+                                attemptsLeft: c.attemptsLeft
+                            }))
+                        }
+                    });
+                }
             }
         }
         res.status(400).json({ success: false, message: "Payment Not Paid" });
@@ -319,7 +367,9 @@ app.post('/api/login', async (req, res) => {
             email: { $regex: new RegExp(`^${email}$`, 'i') }
         });
 
-        if (!user) return res.status(404).json({ message: 'User not found. Check details or Enroll.' });
+        if (!user) return res.status(404).json({ message: 'User not found. Check details or Purchase Course.' })
+
+            ;
 
         // Name Match
         const dbName = user.name.toLowerCase().trim();
@@ -328,11 +378,21 @@ app.post('/api/login', async (req, res) => {
             return res.status(401).json({ message: 'Name does not match our records.' });
         }
 
-        if (!user.isPaid) return res.status(403).json({ message: 'Payment incomplete' });
+        // Check if user has any paid courses
+        if (!user.courses || user.courses.length === 0) {
+            return res.status(403).json({ message: 'No courses purchased. Please buy a course first.' });
+        }
 
         const now = new Date();
-        const expiry = new Date(user.expiryDate);
-        if (now > expiry) return res.status(403).json({ message: 'Access Expired (20 Days Limit)' });
+
+        // Filter valid paid courses (paid + not expired)
+        const validCourses = user.courses.filter(c => {
+            return c.isPaid && new Date(c.expiryDate) > now;
+        });
+
+        if (validCourses.length === 0) {
+            return res.status(403).json({ message: 'No valid courses found. Payment incomplete or expired.' });
+        }
 
         // Generate JWT
         const token = jwt.sign(
@@ -348,10 +408,13 @@ app.post('/api/login', async (req, res) => {
                 name: user.name,
                 mobile: user.mobile,
                 email: user.email,
-                centerName: user.centerName,
-                selectedSubject: user.enrolledCourse === 'fttp' ? 'CSS' : 'CLS',
-                courseName: user.courseName,
-                attemptsLeft: user.attemptsLeft
+                centerName: user.centerName || 'Online Student',
+                courses: validCourses.map(c => ({
+                    courseId: c.courseId,
+                    courseName: c.courseName,
+                    selectedSubject: c.subject,
+                    attemptsLeft: c.attemptsLeft
+                }))
             }
         });
 
@@ -365,19 +428,23 @@ app.post('/api/login', async (req, res) => {
 app.post('/api/start-exam', verifyToken, async (req, res) => {
     // We trust the token now
     const mobile = req.user.mobile;
+    const { courseId } = req.body; // Which course exam to start
 
     try {
         const user = await User.findOne({ mobile });
         if (!user) return res.status(404).json({ message: 'User not found' });
 
-        if (user.attemptsLeft <= 0) return res.status(403).json({ message: 'No attempts left' });
+        // Find the specific course
+        const course = user.courses.find(c => c.courseId === courseId && c.isPaid);
+        if (!course) return res.status(404).json({ message: 'Course not found or not paid' });
 
-        const updatedUser = await User.findOneAndUpdate(
-            { mobile },
-            { $inc: { attemptsLeft: -1 } },
-            { new: true }
-        );
-        res.status(200).json({ success: true, attemptsLeft: updatedUser.attemptsLeft });
+        if (course.attemptsLeft <= 0) return res.status(403).json({ message: 'No attempts left for this course' });
+
+        // Decrement attempts for this specific course
+        course.attemptsLeft -= 1;
+        await user.save();
+
+        res.status(200).json({ success: true, attemptsLeft: course.attemptsLeft });
     } catch (e) {
         console.error(e);
         res.status(500).json({ message: "Error" });
