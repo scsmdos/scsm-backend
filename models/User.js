@@ -16,7 +16,9 @@ const UserSchema = new mongoose.Schema({
         paymentDate: { type: Date },
         expiryDate: { type: Date },
         attemptsLeft: { type: Number, default: 30 }
-    }]
+    }],
+    // Single Device Login Token
+    sessionToken: { type: String }
 }, { timestamps: true });
 
 // Prevent recompilation of model

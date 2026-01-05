@@ -59,7 +59,7 @@ async function startServer() {
 startServer();
 
 // --- MIDDLEWARE ---
-const verifyToken = (req, res, next) => {
+const verifyToken = async (req, res, next) => {
     const authHeader = req.headers['authorization'];
     if (!authHeader) return res.status(401).json({ message: "Access Denied. No Token Provided." });
 
@@ -69,6 +69,15 @@ const verifyToken = (req, res, next) => {
     try {
         const verified = jwt.verify(token, process.env.JWT_SECRET);
         req.user = verified; // { _id, mobile, iat, exp }
+
+        // Single Device Check
+        const user = await User.findById(req.user._id);
+        if (!user) return res.status(401).json({ message: "User not found." });
+
+        if (user.sessionToken !== token) {
+            return res.status(401).json({ message: "Logged in on another device. Please login again." });
+        }
+
         next();
     } catch (err) {
         res.status(400).json({ message: "Invalid or Expired Token" });
@@ -326,6 +335,10 @@ app.post('/api/verify-payment', async (req, res) => {
                         { expiresIn: '20d' }
                     );
 
+                    // Save token to enforce single device login
+                    user.sessionToken = token;
+                    await user.save();
+
                     // Return ALL paid courses
                     const paidCourses = user.courses.filter(c => c.isPaid && new Date() < new Date(c.expiryDate));
 
@@ -409,6 +422,10 @@ app.post('/api/login', async (req, res) => {
             process.env.JWT_SECRET,
             { expiresIn: '1d' }
         );
+
+        // Save session token to DB checks
+        user.sessionToken = token;
+        await user.save();
 
         return res.status(200).json({
             success: true,
