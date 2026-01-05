@@ -1,0 +1,30 @@
+{
+    "name": "scsm-backend",
+    "version": "1.0.0",
+    "type": "module",
+    "description": "SCSM Website Backend - Express Server with MongoDB",
+    "main": "server.js",
+    "scripts": {
+        "start": "node server.js",
+        "dev": "node server.js"
+    },
+    "keywords": [
+        "express",
+        "nodejs",
+        "mongodb",
+        "cashfree"
+    ],
+    "author": "SCSM",
+    "license": "ISC",
+    "dependencies": {
+        "express": "^5.2.1",
+        "cors": "^2.8.5",
+        "axios": "^1.13.2",
+        "dotenv": "^17.2.3",
+        "jsonwebtoken": "^9.0.3",
+        "mongoose": "^9.1.1"
+    },
+    "engines": {
+        "node": ">=18.0.0"
+    }
+}
