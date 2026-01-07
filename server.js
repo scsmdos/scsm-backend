@@ -396,17 +396,42 @@ app.post('/api/login', async (req, res) => {
             validCourses = user.courses.filter(c => c.isPaid && new Date(c.expiryDate) > now);
         }
 
-        // 2. Check OLD Schema (Legacy Support)
-        if (validCourses.length === 0 && user.isPaid) {
+        // 2. Check OLD Schema (Legacy Support) & Migrate if needed
+        if ((!user.courses || user.courses.length === 0) && user.isPaid) {
             const expiry = user.expiryDate ? new Date(user.expiryDate) : new Date(Date.now() + 86400000); // Default 1 day if missing
+
             if (expiry > now) {
-                validCourses.push({
-                    courseId: user.enrolledCourse || 'fttp',
-                    courseName: user.courseName || 'Soft Skills Practice',
-                    subject: (user.enrolledCourse === 'dttp') ? 'CLS' : 'CSS',
-                    attemptsLeft: user.attemptsLeft || 30,
-                    selectedSubject: (user.enrolledCourse === 'dttp') ? 'CLS' : 'CSS'
-                });
+                console.log(`[Login] Migrating Legacy User: ${user.mobile} to new Course Format`);
+
+                // Grant BOTH courses to legacy users (Auto-Upgrade to Combo)
+                user.courses = [
+                    {
+                        courseId: 'fttp',
+                        courseName: 'Soft Skills Practice',
+                        subject: 'CSS',
+                        isPaid: true,
+                        orderId: 'LEGACY_MIGRATION',
+                        paymentDate: new Date(),
+                        expiryDate: expiry,
+                        attemptsLeft: user.attemptsLeft || 30
+                    },
+                    {
+                        courseId: 'dttp',
+                        courseName: 'Language Skills Practice',
+                        subject: 'CLS',
+                        isPaid: true,
+                        orderId: 'LEGACY_MIGRATION',
+                        paymentDate: new Date(),
+                        expiryDate: expiry,
+                        attemptsLeft: user.attemptsLeft || 30
+                    }
+                ];
+
+                // Save the migration permanently to DB
+                await user.save();
+
+                // Use these new courses for the response
+                validCourses = user.courses.filter(c => c.isPaid && new Date(c.expiryDate) > now);
             }
         }
 
