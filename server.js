@@ -154,12 +154,17 @@ app.post('/api/create-order', async (req, res) => {
     try {
         const { customerId, customerName, customerPhone, customerEmail, orderAmount, returnUrl, courseId, centerName } = req.body;
 
-        console.log(`[CreateOrder] Request received for ${customerPhone} - Course: ${courseId} - Amount: ${orderAmount}`);
+        // ENFORCE SERVER-SIDE PRICING
+        let finalAmount = orderAmount;
+        if (courseId === 'soft-lang-combo') finalAmount = 199.00;
+        if (courseId === 'comm-personality') finalAmount = 49.00;
+
+        console.log(`[CreateOrder] Request received for ${customerPhone} - Course: ${courseId} - Amount: ${finalAmount}`);
         const appId = process.env.CASHFREE_APP_ID;
         const secret = process.env.CASHFREE_SECRET_KEY;
 
         // Basic Validation
-        if (!customerName || !customerPhone || !customerEmail || !orderAmount) {
+        if (!customerName || !customerPhone || !customerEmail || !finalAmount) {
             return res.status(400).json({ message: "Missing Details" });
         }
 
@@ -167,7 +172,7 @@ app.post('/api/create-order', async (req, res) => {
         import('node-notifier').then((notifier) => {
             notifier.default.notify({
                 title: 'New Course Enrollment!',
-                message: `${customerName} is buying ${courseId} for ₹${orderAmount}`,
+                message: `${customerName} is buying ${courseId} for ₹${finalAmount}`,
                 sound: true, // Only plays default system sound
                 wait: false
             });
@@ -299,7 +304,7 @@ app.post('/api/create-order', async (req, res) => {
 
         const payload = {
             order_id: orderId,
-            order_amount: orderAmount,
+            order_amount: finalAmount,
             order_currency: "INR",
             customer_details: {
                 customer_id: customerId,
@@ -423,11 +428,15 @@ app.post('/api/login', async (req, res) => {
 
         if (!user) return res.status(404).json({ message: 'User not found. Check details or Purchase Course.' });
 
-        // Name Match
-        const dbName = user.name.toLowerCase().trim();
-        const inputName = name.toLowerCase().trim();
-        if (!dbName.includes(inputName) && !inputName.includes(dbName)) {
-            return res.status(401).json({ message: 'Name does not match our records.' });
+        // Name Match (Strict Check as per User Request)
+        const normalize = (str) => str.toLowerCase().replace(/\s+/g, ' ').trim();
+        const dbName = normalize(user.name);
+        const inputName = normalize(name);
+
+        // Strict Equality Check
+        if (dbName !== inputName) {
+            console.log(`[Login Failed] Name Mismatch. DB: '${dbName}', Input: '${inputName}'`);
+            return res.status(401).json({ message: 'Name mismatch. Please enter your full registered name.' });
         }
 
         const now = new Date();
