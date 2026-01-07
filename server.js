@@ -154,15 +154,12 @@ app.post('/api/create-order', async (req, res) => {
     try {
         const { customerId, customerName, customerPhone, customerEmail, orderAmount, returnUrl, courseId, centerName } = req.body;
 
-        console.log(`[CreateOrder] Request received for ${customerPhone} - Amount: ${orderAmount}`);
+        console.log(`[CreateOrder] Request received for ${customerPhone} - Course: ${courseId} - Amount: ${orderAmount}`);
         const appId = process.env.CASHFREE_APP_ID;
         const secret = process.env.CASHFREE_SECRET_KEY;
-        console.log(`[CreateOrder] Cashfree Config - AppID Present: ${!!appId}, Secret Present: ${!!secret}`);
-        if (appId) console.log(`[CreateOrder] Mode: ${appId.startsWith('TEST') ? 'TEST' : 'PROD'}`);
 
         // Basic Validation
         if (!customerName || !customerPhone || !customerEmail || !orderAmount) {
-            console.log("[CreateOrder] Validation Failed: Missing Details");
             return res.status(400).json({ message: "Missing Details" });
         }
 
@@ -171,86 +168,86 @@ app.post('/api/create-order', async (req, res) => {
         const expiry = new Date();
         expiry.setDate(expiry.getDate() + validityDays);
 
-        const subject = courseId === 'fttp' ? 'CSS' : 'CLS';
-        const fullCourseName = courseId === 'fttp' ? 'Soft Skills Practice' : 'Language Skills Practice';
+        // Define courses to process based on input ID
+        let coursesToProcess = [];
 
-        // Try database save with timeout protection
+        if (courseId === 'soft-lang-combo') {
+            // MERGED COURSE LOGIC: Add both courses under one order
+            coursesToProcess = [
+                { id: 'fttp', name: 'Soft Skills Practice', subject: 'CSS' },
+                { id: 'dttp', name: 'Language Skills Practice', subject: 'CLS' }
+            ];
+        } else {
+            // Standard Single Course
+            const subject = courseId === 'fttp' ? 'CSS' : (courseId === 'dttp' ? 'CLS' : 'OTHER');
+            const fullCourseName = courseId === 'fttp' ? 'Soft Skills Practice' : (courseId === 'dttp' ? 'Language Skills Practice' : courseId);
+            coursesToProcess = [
+                { id: courseId, name: fullCourseName, subject: subject }
+            ];
+        }
+
+        // Database Operations
         console.log(`[CreateOrder] Saving user to database...`);
         try {
-            // Find user first
             let user = await User.findOne({ mobile: customerPhone });
 
             if (!user) {
-                // New user - create with first course
-                const savePromise = User.create({
+                // New User
+                const initialCourses = coursesToProcess.map(c => ({
+                    courseId: c.id,
+                    courseName: c.name,
+                    subject: c.subject,
+                    isPaid: false,
+                    orderId: orderId, // SAME Order ID for all
+                    paymentDate: new Date(),
+                    expiryDate: expiry,
+                    attemptsLeft: 30
+                }));
+
+                await User.create({
                     name: customerName,
                     email: customerEmail,
                     mobile: customerPhone,
                     centerName: centerName || 'Online Student',
-                    courses: [{
-                        courseId: courseId,
-                        courseName: fullCourseName,
-                        subject: subject,
-                        isPaid: false,
-                        orderId: orderId,
-                        paymentDate: new Date(),
-                        expiryDate: expiry,
-                        attemptsLeft: 30
-                    }]
+                    courses: initialCourses
                 });
-
-                await Promise.race([
-                    savePromise,
-                    new Promise((_, reject) => setTimeout(() => reject(new Error('DB Timeout')), 5000))
-                ]);
             } else {
-                // Existing user - check if course already purchased
-                const existingCourse = user.courses.find(c => c.courseId === courseId);
+                // Existing User - Update or Add courses
+                for (const courseItem of coursesToProcess) {
+                    const existingCourse = user.courses.find(c => c.courseId === courseItem.id);
 
-                if (existingCourse) {
-                    // Update existing course order
-                    existingCourse.orderId = orderId;
-                    existingCourse.isPaid = false;
-                    existingCourse.paymentDate = new Date();
-                } else {
-                    // Add new course
-                    user.courses.push({
-                        courseId: courseId,
-                        courseName: fullCourseName,
-                        subject: subject,
-                        isPaid: false,
-                        orderId: orderId,
-                        paymentDate: new Date(),
-                        expiryDate: expiry,
-                        attemptsLeft: 30
-                    });
+                    if (existingCourse) {
+                        existingCourse.orderId = orderId;
+                        existingCourse.isPaid = false;
+                        existingCourse.paymentDate = new Date();
+                    } else {
+                        user.courses.push({
+                            courseId: courseItem.id,
+                            courseName: courseItem.name,
+                            subject: courseItem.subject,
+                            isPaid: false,
+                            orderId: orderId,
+                            paymentDate: new Date(),
+                            expiryDate: expiry,
+                            attemptsLeft: 30
+                        });
+                    }
                 }
-
-                const savePromise = user.save();
-                await Promise.race([
-                    savePromise,
-                    new Promise((_, reject) => setTimeout(() => reject(new Error('DB Timeout')), 5000))
-                ]);
+                await user.save();
             }
-
-            console.log(`[CreateOrder] User saved successfully`);
         } catch (dbError) {
-            console.error(`[CreateOrder] Database Error (continuing anyway):`, dbError.message);
-            // Continue without database for testing
+            console.error(`[CreateOrder] Database Error:`, dbError.message);
         }
 
+        // Cashfree Integration
         const CASHFREE_APP_ID = process.env.CASHFREE_APP_ID ? process.env.CASHFREE_APP_ID.trim() : '';
         const CASHFREE_SECRET_KEY = process.env.CASHFREE_SECRET_KEY ? process.env.CASHFREE_SECRET_KEY.trim() : '';
 
         if (!CASHFREE_APP_ID || !CASHFREE_SECRET_KEY) {
-            console.error('[CreateOrder] MISSING CASHFREE CREDENTIALS');
-            return res.status(500).json({
-                error: 'Payment gateway not configured',
-                message: 'CASHFREE credentials missing in .env file'
-            });
+            return res.status(500).json({ error: 'Payment gateway not configured' });
         }
 
-        const isTestKey = CASHFREE_APP_ID && CASHFREE_APP_ID.startsWith('TEST');
+        const isTestKey = CASHFREE_APP_ID.startsWith('TEST');
         const BASE_URL = isTestKey ? 'https://sandbox.cashfree.com/pg' : 'https://api.cashfree.com/pg';
 
         const payload = {
@@ -268,9 +265,6 @@ app.post('/api/create-order', async (req, res) => {
             }
         };
 
-        console.log(`[CreateOrder] Calling Cashfree API: ${BASE_URL}/orders`);
-        console.log(`[CreateOrder] Payload:`, JSON.stringify(payload, null, 2));
-
         const response = await axios.post(`${BASE_URL}/orders`, payload, {
             headers: {
                 'Content-Type': 'application/json',
@@ -280,19 +274,13 @@ app.post('/api/create-order', async (req, res) => {
             }
         });
 
-        console.log(`[CreateOrder] Success! Payment session created`);
         res.json(response.data);
 
     } catch (error) {
-        console.error("Create Order Error (Full):", error.message);
-        if (error.response) {
-            console.error("Create Order Response Data:", JSON.stringify(error.response.data, null, 2));
-            console.error("Create Order Response Status:", error.response.status);
-        }
+        console.error("Create Order Error:", error.message);
         res.status(500).json({
-            error: error.message,
-            details: error.response?.data || "No response data",
-            message: "Payment Initialization Failed"
+            message: "Payment Initialization Failed",
+            details: error.response?.data
         });
     }
 });
@@ -317,15 +305,22 @@ app.post('/api/verify-payment', async (req, res) => {
         });
 
         if (response.data.order_status === 'PAID') {
-            // Find user and update the specific course as paid
+            // Find user who has ANY course with this orderId
             const user = await User.findOne({ 'courses.orderId': orderId });
 
             if (user) {
-                // Find and update the specific course
-                const course = user.courses.find(c => c.orderId === orderId);
-                if (course) {
-                    course.isPaid = true;
-                    course.paymentDate = new Date();
+                // Mark ALL courses with this Order ID as Paid
+                // Important for the Combo Pack (2 courses, same Order ID)
+                let updated = false;
+                user.courses.forEach(c => {
+                    if (c.orderId === orderId) {
+                        c.isPaid = true;
+                        c.paymentDate = new Date();
+                        updated = true;
+                    }
+                });
+
+                if (updated) {
                     await user.save();
 
                     // Generate JWT
@@ -335,7 +330,6 @@ app.post('/api/verify-payment', async (req, res) => {
                         { expiresIn: '20d' }
                     );
 
-                    // Save token to enforce single device login
                     user.sessionToken = token;
                     await user.save();
 
@@ -368,7 +362,6 @@ app.post('/api/verify-payment', async (req, res) => {
     }
 });
 
-// 3. LOGIN API (Strict) & GENERATE TOKEN
 // 3. LOGIN API (Strict) & GENERATE TOKEN
 app.post('/api/login', async (req, res) => {
     const { name, mobile, email } = req.body;
@@ -487,4 +480,3 @@ app.use((req, res) => {
         res.status(404).json({ message: 'Not Found' });
     }
 });
-

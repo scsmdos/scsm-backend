@@ -18,7 +18,14 @@ const UserSchema = new mongoose.Schema({
         attemptsLeft: { type: Number, default: 30 }
     }],
     // Single Device Login Token
-    sessionToken: { type: String }
+    sessionToken: { type: String },
+
+    // Legacy Support (Old Schema Fields) - kept for backward compatibility
+    enrolledCourse: { type: String },
+    courseName: { type: String },
+    isPaid: { type: Boolean },
+    expiryDate: { type: Date },
+    attemptsLeft: { type: Number }
 }, { timestamps: true });
 
 // Prevent recompilation of model
