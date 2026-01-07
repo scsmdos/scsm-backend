@@ -213,6 +213,10 @@ app.post('/api/create-order', async (req, res) => {
                 });
             } else {
                 // Existing User - Update or Add courses
+                if (!user.courses) {
+                    user.courses = [];
+                }
+
                 for (const courseItem of coursesToProcess) {
                     const existingCourse = user.courses.find(c => c.courseId === courseItem.id);
 
@@ -233,7 +237,8 @@ app.post('/api/create-order', async (req, res) => {
                         });
                     }
                 }
-                await user.save();
+                const savedUser = await user.save();
+                console.log(`[CreateOrder] User updated successfully: ${savedUser._id}`);
             }
         } catch (dbError) {
             console.error(`[CreateOrder] Database Error:`, dbError.message);
