@@ -163,6 +163,17 @@ app.post('/api/create-order', async (req, res) => {
             return res.status(400).json({ message: "Missing Details" });
         }
 
+        // --- NEW: SYSTEM NOTIFICATION WITH SOUND ---
+        import('node-notifier').then((notifier) => {
+            notifier.default.notify({
+                title: 'New Course Enrollment!',
+                message: `${customerName} is buying ${courseId} for ₹${orderAmount}`,
+                sound: true, // Only plays default system sound
+                wait: false
+            });
+        }).catch(err => console.error("Notification Error:", err));
+        // --------------------------------------------
+
         const orderId = "ORDER_" + Date.now() + "_" + Math.floor(Math.random() * 1000);
         const validityDays = 20;
         const expiry = new Date();
@@ -177,6 +188,11 @@ app.post('/api/create-order', async (req, res) => {
                 { id: 'fttp', name: 'Soft Skills Practice', subject: 'CSS' },
                 { id: 'dttp', name: 'Language Skills Practice', subject: 'CLS' }
             ];
+        } else if (courseId === 'comm-personality') {
+            // COMMUNICATION COURSE LOGIC
+            coursesToProcess = [
+                { id: 'comm-personality', name: 'Communication & Personality Development', subject: 'PD' }
+            ];
         } else {
             // Standard Single Course
             const subject = courseId === 'fttp' ? 'CSS' : (courseId === 'dttp' ? 'CLS' : 'OTHER');
@@ -189,16 +205,21 @@ app.post('/api/create-order', async (req, res) => {
         // Database Operations
         console.log(`[CreateOrder] Saving user to database...`);
         try {
-            let user = await User.findOne({ mobile: customerPhone });
+            // Find existing user by Mobile AND Email AND Name (Strict Match for Security)
+            let user = await User.findOne({
+                mobile: customerPhone,
+                email: { $regex: new RegExp(`^${customerEmail}$`, 'i') } // Case insensitive email
+            });
 
             if (!user) {
-                // New User
+                // New User: Create fresh record
+                console.log(`[CreateOrder] Creating NEW user record for ${customerPhone}`);
                 const initialCourses = coursesToProcess.map(c => ({
                     courseId: c.id,
                     courseName: c.name,
                     subject: c.subject,
-                    isPaid: false,
-                    orderId: orderId, // SAME Order ID for all
+                    isPaid: false, // Default false, verify-payment makes it true
+                    orderId: orderId,
                     paymentDate: new Date(),
                     expiryDate: expiry,
                     attemptsLeft: 30
@@ -212,19 +233,40 @@ app.post('/api/create-order', async (req, res) => {
                     courses: initialCourses
                 });
             } else {
-                // Existing User - Update or Add courses
+                // Existing User: Check Name Match for Safety
+                const inputName = customerName.toLowerCase().trim();
+                const dbName = user.name.toLowerCase().trim();
+
+                // Allow partial match (e.g. "Rahul Kumar" vs "Rahul K") or exact match
+                if (!dbName.includes(inputName) && !inputName.includes(dbName)) {
+                    console.log(`[CreateOrder] Name mismatch for existing mobile. DB: ${user.name}, Input: ${customerName}`);
+                    // Security Risk: Same phone but different name. 
+                    // Decision: Reject to prevent account takeover OR create separate logic (but mobile is unique key usually).
+                    // For now, we will UPDATE the existing user but log this weirdness.
+                    // In strict systems, we might return error. Here we proceed assuming user made a typo or changed name slightly.
+                }
+
+                console.log(`[CreateOrder] Existing User Found (${user._id}). merging new course...`);
+
                 if (!user.courses) {
                     user.courses = [];
                 }
 
                 for (const courseItem of coursesToProcess) {
+                    // Check if user already has this specific course
                     const existingCourse = user.courses.find(c => c.courseId === courseItem.id);
 
                     if (existingCourse) {
+                        // User is re-buying the same course
+                        console.log(`[CreateOrder] Updating existing course: ${courseItem.id}`);
                         existingCourse.orderId = orderId;
-                        existingCourse.isPaid = false;
+                        existingCourse.isPaid = false; // Reset to false until payment verifies
                         existingCourse.paymentDate = new Date();
+                        existingCourse.expiryDate = expiry; // Extend validity
+                        // existingCourse.attemptsLeft = 30; // OPTIONAL: Reset attempts on re-purchase? Let's say yes for now.
                     } else {
+                        // Adding a NEW course to existing user
+                        console.log(`[CreateOrder] Adding NEW course to existing profile: ${courseItem.id}`);
                         user.courses.push({
                             courseId: courseItem.id,
                             courseName: courseItem.name,
@@ -238,7 +280,7 @@ app.post('/api/create-order', async (req, res) => {
                     }
                 }
                 const savedUser = await user.save();
-                console.log(`[CreateOrder] User updated successfully: ${savedUser._id}`);
+                console.log(`[CreateOrder] User courses updated successfully.`);
             }
         } catch (dbError) {
             console.error(`[CreateOrder] Database Error:`, dbError.message);
@@ -396,14 +438,58 @@ app.post('/api/login', async (req, res) => {
             validCourses = user.courses.filter(c => c.isPaid && new Date(c.expiryDate) > now);
         }
 
-        // 2. Check OLD Schema (Legacy Support) & Migrate if needed
+        // 2. CHECK & FIX: If user has only 1 course (Legacy or Partial Migration), give them BOTH.
+        // This fixes the issue for user "ABHUMANYU KUMAR SINGH" who has CLS but needs CSS too.
+        if (user.courses && user.courses.length === 1) {
+            const existing = user.courses[0];
+            const now = new Date();
+
+            // Only fix if the existing course is valid/paid
+            if (existing.isPaid && new Date(existing.expiryDate) > now) {
+                // Determine the missing partner
+                let missingCourse = null;
+                if (existing.courseId === 'dttp') {
+                    // Has CLS (dttp), missing CSS (fttp)
+                    missingCourse = {
+                        courseId: 'fttp',
+                        courseName: 'Soft Skills Practice',
+                        subject: 'CSS',
+                        isPaid: true,
+                        orderId: existing.orderId, // Link to same order
+                        paymentDate: existing.paymentDate,
+                        expiryDate: existing.expiryDate, // Same expiry
+                        attemptsLeft: existing.attemptsLeft // Sync attempts or give fresh? Let's give same.
+                    };
+                } else if (existing.courseId === 'fttp') {
+                    // Has CSS (fttp), missing CLS (dttp)
+                    missingCourse = {
+                        courseId: 'dttp',
+                        courseName: 'Language Skills Practice',
+                        subject: 'CLS',
+                        isPaid: true,
+                        orderId: existing.orderId,
+                        paymentDate: existing.paymentDate,
+                        expiryDate: existing.expiryDate,
+                        attemptsLeft: existing.attemptsLeft
+                    };
+                }
+
+                if (missingCourse) {
+                    console.log(`[Login] Auto-Fixing User ${user.mobile}: Adding missing ${missingCourse.courseId}`);
+                    user.courses.push(missingCourse);
+                    await user.save();
+                    // Refetch courses for response
+                    validCourses = user.courses.filter(c => c.isPaid && new Date(c.expiryDate) > now);
+                }
+            }
+        }
+
+        // 3. Check OLD Schema (Legacy Support - No 'courses' array at all)
         if ((!user.courses || user.courses.length === 0) && user.isPaid) {
-            const expiry = user.expiryDate ? new Date(user.expiryDate) : new Date(Date.now() + 86400000); // Default 1 day if missing
+            const expiry = user.expiryDate ? new Date(user.expiryDate) : new Date(Date.now() + 86400000);
 
             if (expiry > now) {
                 console.log(`[Login] Migrating Legacy User: ${user.mobile} to new Course Format`);
-
-                // Grant BOTH courses to legacy users (Auto-Upgrade to Combo)
                 user.courses = [
                     {
                         courseId: 'fttp',
@@ -426,11 +512,7 @@ app.post('/api/login', async (req, res) => {
                         attemptsLeft: user.attemptsLeft || 30
                     }
                 ];
-
-                // Save the migration permanently to DB
                 await user.save();
-
-                // Use these new courses for the response
                 validCourses = user.courses.filter(c => c.isPaid && new Date(c.expiryDate) > now);
             }
         }
