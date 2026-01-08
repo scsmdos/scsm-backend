@@ -227,7 +227,8 @@ app.post('/api/create-order', async (req, res) => {
                     orderId: orderId,
                     paymentDate: new Date(),
                     expiryDate: expiry,
-                    attemptsLeft: 30
+                    attemptsLeft: 30,
+                    modulesCompleted: []
                 }));
 
                 await User.create({
@@ -280,7 +281,8 @@ app.post('/api/create-order', async (req, res) => {
                             orderId: orderId,
                             paymentDate: new Date(),
                             expiryDate: expiry,
-                            attemptsLeft: 30
+                            attemptsLeft: 30,
+                            modulesCompleted: []
                         });
                     }
                 }
@@ -399,7 +401,9 @@ app.post('/api/verify-payment', async (req, res) => {
                                 courseId: c.courseId,
                                 courseName: c.courseName,
                                 selectedSubject: c.subject,
-                                attemptsLeft: c.attemptsLeft
+                                selectedSubject: c.subject,
+                                attemptsLeft: c.attemptsLeft,
+                                modulesCompleted: c.modulesCompleted || []
                             }))
                         }
                     });
@@ -553,7 +557,8 @@ app.post('/api/login', async (req, res) => {
                     courseId: c.courseId,
                     courseName: c.courseName,
                     selectedSubject: c.subject || c.selectedSubject || 'CSS',
-                    attemptsLeft: c.attemptsLeft
+                    attemptsLeft: c.attemptsLeft,
+                    modulesCompleted: c.modulesCompleted || []
                 }))
             }
         });
@@ -588,6 +593,37 @@ app.post('/api/start-exam', verifyToken, async (req, res) => {
     } catch (e) {
         console.error(e);
         res.status(500).json({ message: "Error" });
+    }
+});
+
+// 5. UPDATE PROGRESS (LMS)
+app.post('/api/update-progress', verifyToken, async (req, res) => {
+    const mobile = req.user.mobile;
+    const { courseId, completedModules } = req.body;
+
+    if (!courseId || !Array.isArray(completedModules)) {
+        return res.status(400).json({ message: "Invalid Request Data" });
+    }
+
+    try {
+        const user = await User.findOne({ mobile });
+        if (!user) return res.status(404).json({ message: 'User not found' });
+
+        const course = user.courses.find(c => c.courseId === courseId && c.isPaid);
+        if (!course) return res.status(404).json({ message: 'Course not found or not paid' });
+
+        // Update Progress
+        // Merge existing with new (Set unique)
+        const currentProgress = course.modulesCompleted || [];
+        const newProgress = [...new Set([...currentProgress, ...completedModules])];
+
+        course.modulesCompleted = newProgress;
+        await user.save();
+
+        res.status(200).json({ success: true, modulesCompleted: newProgress });
+    } catch (e) {
+        console.error("Progress Update Error:", e);
+        res.status(500).json({ message: "Server Error" });
     }
 });
 

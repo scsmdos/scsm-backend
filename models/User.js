@@ -15,7 +15,8 @@ const UserSchema = new mongoose.Schema({
         orderId: { type: String },
         paymentDate: { type: Date },
         expiryDate: { type: Date },
-        attemptsLeft: { type: Number, default: 30 }
+        attemptsLeft: { type: Number, default: 30 },
+        modulesCompleted: { type: [Number], default: [] } // Track completed modules
     }],
     // Single Device Login Token
     sessionToken: { type: String },
